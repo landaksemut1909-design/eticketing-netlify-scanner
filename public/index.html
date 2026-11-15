@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f766e">
+  <title>Scanner Tiket</title>
+  <style>
+    :root{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#172033;background:#f3f6fa;font-synthesis:none}
+    *{box-sizing:border-box}body{margin:0}.top{height:12px;background:#0f766e}.wrap{width:min(100% - 28px,680px);margin:28px auto 50px}
+    .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}.brand{font-size:22px;font-weight:800}.sub{font-size:13px;color:#64748b;margin-top:3px}
+    .card{background:#fff;border:1px solid #dce4ee;border-radius:18px;padding:20px;margin:14px 0;box-shadow:0 2px 8px #0f172a08}
+    h2{font-size:20px;margin:0 0 14px}label{display:block;font-size:14px;font-weight:650;margin:12px 0 7px}
+    input,select{width:100%;padding:12px 13px;border:1px solid #cbd5e1;border-radius:10px;font:inherit;background:white;min-height:46px}
+    button{border:0;border-radius:11px;padding:13px 16px;font:inherit;font-weight:700;cursor:pointer;min-height:46px}
+    button:disabled{opacity:.5;cursor:not-allowed}.primary{background:#0f766e;color:white}.secondary{background:#e8eef5;color:#1e293b}.ghost{background:#fff;border:1px solid #cbd5e1;color:#334155}
+    .block{width:100%}.row{display:flex;gap:10px}.row>*{flex:1}.muted{color:#64748b;text-align:center;font-size:14px;margin-bottom:12px}
+    #reader{width:100%;max-width:480px;min-height:50px;margin:auto;border-radius:12px;overflow:hidden;background:#0f172a}
+    .result{padding:22px 16px;text-align:center;border-radius:18px;margin:14px 0;background:#e2e8f0;color:#334155}.result h2{font-size:30px;margin:0 0 5px}.result p{margin:0;font-size:16px}
+    .ok{background:#16a34a;color:#fff}.warn{background:#facc15;color:#422006}.bad{background:#dc2626;color:#fff}
+    .error{color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:11px;font-size:14px;margin-top:12px;white-space:pre-wrap}
+    .info{line-height:1.9}.info div{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;padding:5px 0}.info div:last-child{border:0}
+    .hint{font-size:13px;color:#64748b;line-height:1.55}.hidden{display:none!important}.stat{font-size:14px;text-align:center;color:#475569;margin-bottom:12px}
+    @media(max-width:480px){.wrap{margin-top:18px}.card{padding:16px}.row{gap:8px}}
+  </style>
+</head>
+<body>
+<div class="top"></div>
+<main class="wrap">
+  <div class="head"><div><div class="brand">Scanner Tiket</div><div class="sub">Pemeriksaan tiket masuk acara</div></div><button id="logout" class="ghost hidden">Keluar</button></div>
+
+  <section id="loginCard" class="card">
+    <h2>Masuk petugas</h2>
+    <label for="pin">PIN petugas scanner</label>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="12" placeholder="Masukkan PIN">
+    <p id="loginError" class="error hidden"></p>
+    <button id="login" class="primary block" style="margin-top:14px">Masuk</button>
+  </section>
+
+  <section id="scannerArea" class="hidden">
+    <div class="card">
+      <div id="stats" class="stat">Memuat data tiket…</div>
+      <label for="cameraSelect">Pilih kamera</label>
+      <select id="cameraSelect"><option value="">Pilih kamera setelah memulai</option></select>
+      <div id="reader"></div>
+      <div class="row" style="margin-top:12px"><button id="start" class="primary">▶ Mulai scanner</button><button id="stop" class="secondary" disabled>■ Berhenti</button></div>
+      <p id="cameraError" class="error hidden"></p>
+      <p class="hint">Buka halaman ini langsung melalui Chrome/Safari, bukan di dalam iframe. Kamera membutuhkan HTTPS dan izin browser.</p>
+    </div>
+    <div id="result" class="result"><h2>SIAP</h2><p>Arahkan kamera ke QR tiket</p></div>
+    <div id="ticketInfo" class="card info hidden"></div>
+    <div class="card">
+      <h2>Cadangan pemindaian</h2>
+      <label for="manual">Ketik atau tempel kode/isi QR</label>
+      <input id="manual" autocomplete="off" autocapitalize="off" placeholder="Tempel kode tiket atau teks QR">
+      <button id="checkManual" class="secondary block" style="margin-top:9px">Periksa kode</button>
+      <label for="imageFile">Atau unggah foto QR</label>
+      <input id="imageFile" type="file" accept="image/*" capture="environment">
+    </div>
+  </section>
+</main>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+(function(){
+  'use strict';
+  const $ = id => document.getElementById(id);
+  let token = null, qrScanner = null, running = false, busy = false, lastText = '', lastAt = 0;
+  try { token = sessionStorage.getItem('netlify_scanner_token'); } catch (_) {}
+
+  async function api(action, fields) {
+    const response = await fetch('/.netlify/functions/scanner-api', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(Object.assign({action:action}, fields || {}))
+    });
+    let result;
+    try { result = await response.json(); }
+    catch (_) { throw new Error('Respons server tidak valid. Periksa konfigurasi Netlify.'); }
+    if (!response.ok || !result.ok) throw new Error(result.error || 'Permintaan gagal.');
+    return result.data;
+  }
+
+  function error(el, message) { el.textContent = message; el.classList.remove('hidden'); }
+  function hide(el) { el.classList.add('hidden'); }
+  function setBusy(button, busy, label) { button.disabled = busy; if (label) button.textContent = label; }
+
+  function showLogin(message) {
+    token = null; try { sessionStorage.removeItem('netlify_scanner_token'); } catch (_) {}
+    stopCamera(); $('scannerArea').classList.add('hidden'); $('loginCard').classList.remove('hidden'); $('logout').classList.add('hidden');
+    if (message) error($('loginError'), message);
+  }
+  function showScanner() {
+    $('loginCard').classList.add('hidden'); $('scannerArea').classList.remove('hidden'); $('logout').classList.remove('hidden');
+    loadStats();
+  }
+  async function doLogin() {
+    hide($('loginError')); setBusy($('login'), true, 'Memeriksa…');
+    try {
+      const result = await api('login', {pin:$('pin').value});
+      token = result.token; try { sessionStorage.setItem('netlify_scanner_token', token); } catch (_) {}
+      $('pin').value = ''; showScanner();
+    } catch (e) { error($('loginError'), e.message); }
+    finally { setBusy($('login'), false, 'Masuk'); }
+  }
+  async function loadStats() {
+    try { const s = await api('stats', {token}); $('stats').textContent = 'Sudah masuk: ' + s.masuk + ' dari ' + s.total + ' tiket aktif'; }
+    catch (e) { if (e.message.indexOf('SESI_BERAKHIR') >= 0) showLogin('Sesi berakhir. Silakan masuk kembali.'); else $('stats').textContent = e.message; }
+  }
+  async function startCamera() {
+    hide($('cameraError'));
+    if (!window.isSecureContext) { error($('cameraError'), 'Kamera membutuhkan koneksi HTTPS. Pastikan halaman dibuka melalui alamat https:// milik Netlify.'); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { error($('cameraError'), 'Browser ini tidak menyediakan akses kamera. Coba Chrome atau Edge versi terbaru.'); return; }
+    if (!window.Html5Qrcode) { error($('cameraError'), 'Library scanner belum termuat. Periksa koneksi internet lalu muat ulang.'); return; }
+    try {
+      const devices = await Html5Qrcode.getCameras();
+      if (!devices || !devices.length) throw new Error('Kamera tidak ditemukan. Periksa sambungan webcam dan izin kamera.');
+      const select = $('cameraSelect'); select.innerHTML = '';
+      devices.forEach((d, i) => { const o = document.createElement('option'); o.value = d.id; o.textContent = d.label || ('Kamera ' + (i+1)); select.appendChild(o); });
+      if (!select.value) select.value = devices[devices.length - 1].id;
+      qrScanner = qrScanner || new Html5Qrcode('reader');
+      await qrScanner.start(select.value, {fps:10, qrbox:(w,h)=>{const s=Math.floor(Math.min(w,h)*0.72);return {width:s,height:s};}}, onDecoded, ()=>{});
+      running = true; $('start').disabled = true; $('stop').disabled = false;
+    } catch (e) {
+      error($('cameraError'), 'Kamera tidak dapat dibuka: ' + (e.message || String(e)) + '\n\nPeriksa izin kamera untuk domain Netlify, tutup aplikasi lain yang memakai kamera, lalu coba lagi.');
+    }
+  }
+  async function stopCamera() {
+    if (qrScanner && running) { try { await qrScanner.stop(); } catch (_) {} try { qrScanner.clear(); } catch (_) {} }
+    running = false; $('start').disabled = false; $('stop').disabled = true;
+  }
+  function onDecoded(text) {
+    const now = Date.now(); if (busy || (text === lastText && now - lastAt < 3500)) return;
+    lastText = text; lastAt = now; submit(text);
+  }
+  async function submit(text) {
+    if (busy) return; busy = true;
+    try { const result = await api('checkin', {token, qrText:text}); showResult(result); }
+    catch (e) { if (e.message.indexOf('SESI_BERAKHIR') >= 0) showLogin('Sesi berakhir. Silakan masuk kembali.'); else paint('bad','ERROR',e.message,null); }
+    finally { busy = false; lastAt = Date.now(); loadStats(); }
+  }
+  function showResult(r) {
+    if (r.status === 'VALID') paint('ok','✓ VALID',r.message,r);
+    else if (r.status === 'USED') paint('warn','⚠ SUDAH DIGUNAKAN',r.message,r);
+    else if (r.status === 'CANCELLED') paint('bad','✕ DIBATALKAN',r.message,r);
+    else paint('bad','✕ TIDAK VALID',r.message,r);
+  }
+  function paint(cls,title,message,r) {
+    const box=$('result'); box.className='result '+cls;
+    const h=document.createElement('h2'); h.textContent=title; const p=document.createElement('p'); p.textContent=message;
+    box.replaceChildren(h,p);
+    const info=$('ticketInfo'); info.replaceChildren();
+    if (r && r.nama) {
+      const rows=[['Nama',r.nama],['No. pesanan',r.orderId],['Jenis tiket',r.jenis],['Tiket ke',r.no]];
+      rows.forEach(([k,v])=>{const d=document.createElement('div'),a=document.createElement('span'),b=document.createElement('strong');a.textContent=k;b.textContent=String(v);d.append(a,b);info.appendChild(d);});
+      info.classList.remove('hidden');
+    } else info.classList.add('hidden');
+    try { if(navigator.vibrate) navigator.vibrate(cls==='ok'?[60]:[150,80,150]); } catch (_) {}
+  }
+
+  $('login').addEventListener('click',doLogin); $('pin').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+  $('logout').addEventListener('click',async()=>{try{await api('logout',{token});}catch(_){} showLogin();});
+  $('start').addEventListener('click',startCamera); $('stop').addEventListener('click',stopCamera);
+  $('cameraSelect').addEventListener('change',async()=>{if(running){await stopCamera();await startCamera();}});
+  $('checkManual').addEventListener('click',()=>{const v=$('manual').value.trim();if(v){$('manual').value='';submit(v);}});
+  $('manual').addEventListener('keydown',e=>{if(e.key==='Enter')$('checkManual').click();});
+  $('imageFile').addEventListener('change',async function(){
+    const file=this.files && this.files[0]; if(!file)return;
+    try { if(!window.Html5Qrcode)throw new Error('Library QR belum termuat.'); qrScanner=qrScanner||new Html5Qrcode('reader'); const text=await qrScanner.scanFile(file,true); submit(text); }
+    catch(e){paint('bad','QR TIDAK TERBACA',e.message||'Foto kurang jelas. Coba foto lain.',null);}
+    this.value='';
+  });
+  if(token) showScanner();
+})();
+</script>
+</body>
+</html>
