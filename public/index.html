@@ -113,11 +113,42 @@
     try {
       const devices = await Html5Qrcode.getCameras();
       if (!devices || !devices.length) throw new Error('Kamera tidak ditemukan. Periksa sambungan webcam dan izin kamera.');
-      const select = $('cameraSelect'); select.innerHTML = '';
-      devices.forEach((d, i) => { const o = document.createElement('option'); o.value = d.id; o.textContent = d.label || ('Kamera ' + (i+1)); select.appendChild(o); });
-      if (!select.value) select.value = devices[devices.length - 1].id;
+
+      const select = $('cameraSelect');
+      const previousChoice = select.value;
+      select.innerHTML = '';
+
+      // Tambahkan pilihan kamera belakang otomatis sebagai cadangan yang andal di HP.
+      const automatic = document.createElement('option');
+      automatic.value = '__environment__';
+      automatic.textContent = 'Kamera belakang (otomatis)';
+      select.appendChild(automatic);
+
+      devices.forEach((d, i) => {
+        const o = document.createElement('option');
+        o.value = d.id;
+        o.textContent = d.label || ('Kamera ' + (i + 1));
+        select.appendChild(o);
+      });
+
+      // Pertahankan pilihan petugas jika scanner sedang berpindah kamera.
+      const rearCamera = devices.find(d => /back|rear|environment|belakang|world/i.test(d.label || ''));
+      if (previousChoice && (previousChoice === '__environment__' || devices.some(d => d.id === previousChoice))) {
+        select.value = previousChoice;
+      } else if (rearCamera) {
+        select.value = rearCamera.id;
+      } else {
+        // Jangan menebak kamera berdasarkan urutan perangkat. Minta kamera belakang dari browser.
+        select.value = '__environment__';
+      }
+
+      const cameraChoice = select.value;
+      const cameraConfig = cameraChoice === '__environment__'
+        ? { facingMode: 'environment' }
+        : cameraChoice;
+
       qrScanner = qrScanner || new Html5Qrcode('reader');
-      await qrScanner.start(select.value, {fps:10, qrbox:(w,h)=>{const s=Math.floor(Math.min(w,h)*0.72);return {width:s,height:s};}}, onDecoded, ()=>{});
+      await qrScanner.start(cameraConfig, {fps:10, qrbox:(w,h)=>{const s=Math.floor(Math.min(w,h)*0.72);return {width:s,height:s};}}, onDecoded, ()=>{});
       running = true; $('start').disabled = true; $('stop').disabled = false;
     } catch (e) {
       error($('cameraError'), 'Kamera tidak dapat dibuka: ' + (e.message || String(e)) + '\n\nPeriksa izin kamera untuk domain Netlify, tutup aplikasi lain yang memakai kamera, lalu coba lagi.');
